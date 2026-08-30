@@ -1,0 +1,37 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    # version is what `snip --version` reports.
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+    # Pinned rather than defaulted: install.sh builds this exact filename, and
+    # the default template omits the version.
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    # Windows users expect a zip.
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md, LICENSE]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  filters:
+    # Release notes should list what changed for users, not repo chores.
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

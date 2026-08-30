@@ -22,6 +22,21 @@ One binary. [kong](https://github.com/alecthomas/kong) is the only dependency.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/wilchen558/snip/main/install.sh | sh
+```
+
+Downloads the latest release for your platform, verifies its checksum, and puts
+`snip` in `~/.local/bin` (override with `SNIP_BIN_DIR`, pin with `SNIP_VERSION`).
+
+With Go installed:
+
+```sh
+go install github.com/wilchen558/snip@latest
+```
+
+From source:
+
+```sh
 git clone https://github.com/wilchen558/snip && cd snip
 go build -ldflags "-X main.version=$(git describe --tags --always)" -o ~/.local/bin/snip .
 ```
@@ -223,6 +238,13 @@ bare name; the parser claims it first. Use `snip toggle on`.
 go test ./...        # 26 tests
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+```
+
+Releases are cut by tagging; GoReleaser builds linux, macOS and Windows for
+amd64 and arm64, and `install.sh` reads whatever the latest release holds.
+
+```sh
+git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
 ```
 
 [AGENTS.md](AGENTS.md) has the architecture and the traps.
