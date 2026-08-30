@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -19,8 +18,9 @@ const (
 	Project Scope = "project"
 )
 
-// projectDirName is the opt-in marker: a repository joins the scheme by having
-// this directory, which `snip scope init` creates.
+// projectDirName is the opt-in marker: a directory joins the scheme by having
+// this path, which "snip scope init" creates. filepath.Join is a call rather
+// than a const so the separator is right on every platform.
 var projectDirName = filepath.Join(".claude", "snippets")
 
 // Snippet identifies one snippet within one scope.
@@ -38,7 +38,7 @@ func (s Snippet) Summary() string { return s.Store.Summary(s.Name) }
 type Set struct {
 	global  *Store
 	project *Store // nil outside an opted-in directory
-	Root    string // the directory owning project, for display
+	root    string // the directory owning project, for display
 }
 
 func NewSet() (*Set, error) {
@@ -47,9 +47,9 @@ func NewSet() (*Set, error) {
 		return nil, err
 	}
 	set := &Set{global: g}
-	if root, dir, ok := findProjectDir(g.Dir); ok {
-		set.project = &Store{Dir: dir}
-		set.Root = root
+	if root, dir, ok := findProjectDir(g.Dir()); ok {
+		set.project = newStoreAt(dir)
+		set.root = root
 	}
 	return set, nil
 }
@@ -112,27 +112,28 @@ func (s *Set) ActiveScope(forceGlobal bool) Scope {
 	return Project
 }
 
-// List returns every snippet in both scopes: global first, then project, each
-// group sorted by name.
+// List returns every snippet in both scopes, global first, each group sorted
+// by name.
 func (s *Set) List() ([]Snippet, error) {
 	var out []Snippet
-	for _, pair := range []struct {
-		scope Scope
-		store *Store
-	}{{Global, s.global}, {Project, s.project}} {
-		if pair.store == nil {
-			continue
-		}
-		names, err := pair.store.Names()
+	for _, store := range s.stores() {
+		names, err := store.Names()
 		if err != nil {
 			return nil, err
 		}
-		sort.Strings(names)
-		for _, n := range names {
-			out = append(out, Snippet{Name: n, Scope: pair.scope, Store: pair.store})
+		scope := s.scopeOf(store)
+		for _, name := range names {
+			out = append(out, Snippet{Name: name, Scope: scope, Store: store})
 		}
 	}
 	return out, nil
+}
+
+func (s *Set) scopeOf(store *Store) Scope {
+	if store == s.project {
+		return Project
+	}
+	return Global
 }
 
 // Resolve finds the store owning a bare name. The project scope wins when both
@@ -160,7 +161,7 @@ func (s *Set) unknown(name string, globalOnly bool) error {
 		if globalOnly && sn.Scope != Global {
 			continue
 		}
-		known = append(known, string(sn.Name))
+		known = append(known, sn.Name)
 	}
 	where := ""
 	if globalOnly {
@@ -172,8 +173,8 @@ func (s *Set) unknown(name string, globalOnly bool) error {
 	return fmt.Errorf("no snippet %q%s (have: %s)", name, where, strings.Join(dedupe(known), ", "))
 }
 
-// Compose concatenates every enabled snippet: global first so a project
-// snippet's instructions read as refinements on top of the baseline.
+// Compose concatenates the enabled snippets of every scope into the text a
+// prompt receives.
 func (s *Set) Compose() (string, error) {
 	var parts []string
 	for _, store := range s.stores() {
@@ -213,17 +214,20 @@ func (s *Set) EnabledLabels() ([]string, error) {
 	return out, nil
 }
 
+// stores lists the active scopes in application order: global first, then
+// project, so project instructions read as refinements on the baseline.
 func (s *Set) stores() []*Store {
-	out := []*Store{s.global}
-	if s.project != nil {
-		out = append(out, s.project)
+	if s.project == nil {
+		return []*Store{s.global}
 	}
-	return out
+	return []*Store{s.global, s.project}
 }
 
+// dedupe removes repeats while preserving first-seen order, which slices.Compact
+// cannot do because it only collapses adjacent duplicates.
 func dedupe(in []string) []string {
-	seen := map[string]bool{}
-	var out []string
+	seen := make(map[string]bool, len(in))
+	out := in[:0:0]
 	for _, v := range in {
 		if seen[v] {
 			continue

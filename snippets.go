@@ -4,22 +4,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
 
 const (
+	// lockTimeout bounds how long a mutation waits for a competing process.
 	lockTimeout = 2 * time.Second
-	lockStale   = 30 * time.Second
+	// lockStale is when a lock is assumed abandoned by a killed process.
+	lockStale = 30 * time.Second
+
+	snippetExt   = ".md"
+	manifestName = ".enabled"
+	filePerm     = 0o644
+	dirPerm      = 0o755
 )
 
 // Store is the on-disk snippet collection: one .md file per snippet plus a
 // .enabled manifest listing, one per line, the snippets currently appended to
 // every prompt.
 type Store struct {
-	Dir string
+	dir string
 }
+
+// newStoreAt builds a store rooted at an existing directory.
+func newStoreAt(dir string) *Store { return &Store{dir: dir} }
+
+// Dir is the directory holding this scope's snippet files and manifest.
+func (s *Store) Dir() string { return s.dir }
+
+// Path is the file backing one snippet.
+func (s *Store) Path(name string) string { return filepath.Join(s.dir, name+snippetExt) }
 
 func NewStore() (*Store, error) {
 	dir := os.Getenv("SNIP_DIR")
@@ -30,39 +46,38 @@ func NewStore() (*Store, error) {
 		}
 		dir = filepath.Join(home, ".claude", "snippets")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return nil, err
 	}
-	return &Store{Dir: dir}, nil
+	return newStoreAt(dir), nil
 }
 
-func (s *Store) path(name string) string { return filepath.Join(s.Dir, name+".md") }
-func (s *Store) manifestPath() string    { return filepath.Join(s.Dir, ".enabled") }
+func (s *Store) manifestPath() string { return filepath.Join(s.dir, manifestName) }
 
 // Names lists every snippet on disk, sorted.
 func (s *Store) Names() ([]string, error) {
-	entries, err := os.ReadDir(s.Dir)
+	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), snippetExt) {
 			continue
 		}
-		out = append(out, strings.TrimSuffix(e.Name(), ".md"))
+		out = append(out, strings.TrimSuffix(entry.Name(), snippetExt))
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out, nil
 }
 
 func (s *Store) Exists(name string) bool {
-	st, err := os.Stat(s.path(name))
+	st, err := os.Stat(s.Path(name))
 	return err == nil && !st.IsDir()
 }
 
 func (s *Store) Body(name string) (string, error) {
-	b, err := os.ReadFile(s.path(name))
+	b, err := os.ReadFile(s.Path(name))
 	if err != nil {
 		return "", err
 	}
@@ -83,13 +98,13 @@ func (s *Store) Write(name, body string) error {
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
-	return os.WriteFile(s.path(name), []byte(body), 0o644)
+	return os.WriteFile(s.Path(name), []byte(body), filePerm)
 }
 
 // RemoveAll deletes snippets from disk and drops them from the manifest.
 func (s *Store) RemoveAll(names ...string) error {
 	for _, name := range names {
-		if err := os.Remove(s.path(name)); err != nil {
+		if err := os.Remove(s.Path(name)); err != nil {
 			return err
 		}
 	}
@@ -168,7 +183,7 @@ func (s *Store) lock() (func(), error) {
 	path := s.manifestPath() + ".lock"
 	deadline := time.Now().Add(lockTimeout)
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, filePerm)
 		if err == nil {
 			f.Close()
 			return func() { os.Remove(path) }, nil
@@ -201,7 +216,7 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+	if err := os.Chmod(tmp.Name(), filePerm); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)

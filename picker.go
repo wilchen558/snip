@@ -95,7 +95,7 @@ func Pick(items []item) ([]string, bool, error) {
 		drawn = 0
 		head := "  space toggle · a all · n none · enter save · q cancel"
 		if window < len(items) {
-			head += fmt.Sprintf("  \033[2m[%d-%d/%d]\033[0m", offset+1, offset+window, len(items))
+			head += fmt.Sprintf("  %s[%d-%d/%d]%s", dim, offset+1, offset+window, len(items), reset)
 		}
 		fmt.Fprintf(tty, "\r\033[K%s\r\n", head)
 		drawn++
@@ -107,9 +107,9 @@ func Pick(items []item) ([]string, bool, error) {
 			}
 			pointer := "  "
 			if i == cur {
-				pointer = "\033[36m>\033[0m "
+				pointer = cyan + ">" + reset + " "
 			}
-			line := fmt.Sprintf("%s[%s] %-16s \033[2m%s\033[0m", pointer, mark, it.name, truncate(it.summary, 46))
+			line := fmt.Sprintf("%s[%s] %-16s %s%s%s", pointer, mark, it.name, dim, truncate(it.summary, 46), reset)
 			fmt.Fprintf(tty, "\r\033[K%s\r\n", line)
 			drawn++
 		}
@@ -161,17 +161,6 @@ func Pick(items []item) ([]string, bool, error) {
 	}
 }
 
-func truncate(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	if max <= 1 {
-		return string(r[:max])
-	}
-	return string(r[:max-1]) + "…"
-}
-
 // terminalHeight reads the row count from stty, returning 0 when unknown so
 // callers fall back to rendering the whole list.
 func terminalHeight(tty *os.File) int {
@@ -188,4 +177,54 @@ func terminalHeight(tty *os.File) int {
 		return 0
 	}
 	return n
+}
+
+type pickCmd struct{}
+
+// Run shows every snippet from both scopes in one checkbox list, then writes
+// each scope's manifest from the selection.
+func (*pickCmd) Run(ctx *Context) error {
+	all, err := ctx.Set.List()
+	if err != nil {
+		return err
+	}
+	if len(all) == 0 {
+		return fmt.Errorf("no snippets in %s", ctx.Set.global.Dir())
+	}
+	tagged := ctx.Set.project != nil
+	items := make([]item, len(all))
+	for i, sn := range all {
+		label := sn.Name
+		if tagged {
+			label = fmt.Sprintf("%s (%s)", sn.Name, sn.Scope)
+		}
+		items[i] = item{name: label, summary: sn.Summary(), on: sn.Enabled()}
+	}
+
+	chosen, ok, err := Pick(items)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Println("cancelled")
+		return nil
+	}
+
+	// Map the picked labels back to a per-scope selection.
+	picked := make(map[string]bool, len(chosen))
+	for _, label := range chosen {
+		picked[label] = true
+	}
+	selection := map[*Store][]string{}
+	for i, sn := range all {
+		if picked[items[i].name] {
+			selection[sn.Store] = append(selection[sn.Store], sn.Name)
+		}
+	}
+	for _, store := range ctx.Set.stores() {
+		if err := store.SetEnabled(selection[store]); err != nil {
+			return err
+		}
+	}
+	return renderList(ctx.Set)
 }

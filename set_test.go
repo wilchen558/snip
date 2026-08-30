@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,14 +16,14 @@ func newTestSet(t *testing.T, withProject bool) *Set {
 	root := t.TempDir()
 	t.Chdir(root)
 
-	set := &Set{global: &Store{Dir: globalDir}}
+	set := &Set{global: newStoreAt(globalDir)}
 	if withProject {
 		dir := filepath.Join(root, projectDirName)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		set.project = &Store{Dir: dir}
-		set.Root = root
+		set.project = newStoreAt(dir)
+		set.root = root
 	}
 	return set
 }
@@ -143,7 +144,7 @@ func TestEnablingOneScopeLeavesTheOtherAlone(t *testing.T) {
 	if _, err := store.Toggle("brief"); err != nil {
 		t.Fatal(err)
 	}
-	if on, _ := set.project.Enabled(); !equal(on, []string{"brief"}) {
+	if on, _ := set.project.Enabled(); !slices.Equal(on, []string{"brief"}) {
 		t.Errorf("project enabled = %v, want [brief]", on)
 	}
 	if on, _ := set.global.Enabled(); len(on) != 0 {
@@ -201,7 +202,7 @@ func TestEnabledLabelsTagOnlyAmbiguousNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	// "solo" exists in one scope so it stays bare; "brief" is tagged.
-	if want := []string{"brief(g)", "solo", "brief(p)"}; !equal(got, want) {
+	if want := []string{"brief(g)", "solo", "brief(p)"}; !slices.Equal(got, want) {
 		t.Errorf("EnabledLabels() = %v, want %v", got, want)
 	}
 }

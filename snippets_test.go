@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,14 +33,14 @@ func TestNamesSortedAndFiltered(t *testing.T) {
 	mustWrite(t, s, "zeta", "Z")
 	mustWrite(t, s, "alpha", "A")
 	// Non-.md files and directories must not appear as snippets.
-	os.WriteFile(filepath.Join(s.Dir, "notes.txt"), []byte("x"), 0o644)
-	os.Mkdir(filepath.Join(s.Dir, "sub.md"), 0o755)
+	os.WriteFile(filepath.Join(s.dir, "notes.txt"), []byte("x"), 0o644)
+	os.Mkdir(filepath.Join(s.dir, "sub.md"), 0o755)
 
 	got, err := s.Names()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"alpha", "zeta"}; !equal(got, want) {
+	if want := []string{"alpha", "zeta"}; !slices.Equal(got, want) {
 		t.Errorf("Names() = %v, want %v", got, want)
 	}
 }
@@ -66,20 +67,20 @@ func TestEnableDisableToggle(t *testing.T) {
 	if err := s.Enable("a", "b"); err != nil {
 		t.Fatal(err)
 	}
-	if on, _ := s.Enabled(); !equal(on, []string{"a", "b"}) {
+	if on, _ := s.Enabled(); !slices.Equal(on, []string{"a", "b"}) {
 		t.Errorf("after Enable = %v", on)
 	}
 	// Enabling twice must not duplicate.
 	if err := s.Enable("a"); err != nil {
 		t.Fatal(err)
 	}
-	if on, _ := s.Enabled(); !equal(on, []string{"a", "b"}) {
+	if on, _ := s.Enabled(); !slices.Equal(on, []string{"a", "b"}) {
 		t.Errorf("re-Enable duplicated: %v", on)
 	}
 	if err := s.Disable("a"); err != nil {
 		t.Fatal(err)
 	}
-	if on, _ := s.Enabled(); !equal(on, []string{"b"}) {
+	if on, _ := s.Enabled(); !slices.Equal(on, []string{"b"}) {
 		t.Errorf("after Disable = %v", on)
 	}
 
@@ -104,7 +105,7 @@ func TestEnabledSkipsDeletedAndComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !equal(on, []string{"live"}) {
+	if !slices.Equal(on, []string{"live"}) {
 		t.Errorf("Enabled() = %v, want [live]", on)
 	}
 }
@@ -154,7 +155,7 @@ func TestRemoveAllDropsFromManifest(t *testing.T) {
 	if s.Exists("a") {
 		t.Error("file still on disk after RemoveAll")
 	}
-	if on, _ := s.Enabled(); !equal(on, []string{"b"}) {
+	if on, _ := s.Enabled(); !slices.Equal(on, []string{"b"}) {
 		t.Errorf("Enabled() = %v, want [b]", on)
 	}
 }
@@ -167,7 +168,7 @@ func TestSetEnabledDedupesAndPreservesOrder(t *testing.T) {
 	if err := s.SetEnabled([]string{"c", "a", "c", "", "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if on, _ := s.Enabled(); !equal(on, []string{"c", "a", "b"}) {
+	if on, _ := s.Enabled(); !slices.Equal(on, []string{"c", "a", "b"}) {
 		t.Errorf("Enabled() = %v, want [c a b]", on)
 	}
 }
@@ -228,7 +229,7 @@ func TestStaleLockIsReclaimed(t *testing.T) {
 	if err := s.Enable("a"); err != nil {
 		t.Fatalf("stale lock was not reclaimed: %v", err)
 	}
-	if on, _ := s.Enabled(); !equal(on, []string{"a"}) {
+	if on, _ := s.Enabled(); !slices.Equal(on, []string{"a"}) {
 		t.Errorf("Enabled() = %v", on)
 	}
 }
@@ -251,18 +252,6 @@ func TestWriteFileAtomicReplacesContent(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("leftover files: %d", len(entries))
 	}
-}
-
-func equal(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func timeLongAgo() time.Time { return time.Now().Add(-10 * lockStale) }

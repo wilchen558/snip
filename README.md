@@ -1,7 +1,8 @@
 # snip
 
 Toggle reusable instruction snippets that get appended to every Claude Code
-prompt, via a `UserPromptSubmit` hook. One stdlib-only binary, no dependencies.
+prompt, via a `UserPromptSubmit` hook. One binary; [kong](https://github.com/alecthomas/kong)
+is the only dependency.
 
 ## Install
 
@@ -71,9 +72,12 @@ by the hook, the status line, and the `/snip` slash command respectively.
 
 | File | Role |
 | --- | --- |
-| `main.go` | CLI dispatch and every subcommand |
-| `snippets.go` | on-disk store: snippet files + enabled manifest |
+| `main.go` | the `CLI` struct — kong derives parsing and help from its tags |
+| `commands.go` | one `Run` method per command |
+| `set.go` | scope resolution: which store owns a name, what a prompt receives |
+| `snippets.go` | one scope's on-disk store: snippet files + enabled manifest |
 | `picker.go` | raw-mode checkbox TUI (stty, no third-party terminal lib) |
+| `render.go` | shared list rendering and ANSI constants |
 
 ## Development
 
@@ -86,3 +90,6 @@ go build -ldflags "-X main.version=$(git describe --tags --always)" -o ~/.local/
 `t.TempDir()`. Manifest mutations take an advisory lock and write atomically;
 `TestConcurrentEnableKeepsEveryUpdate` guards that — without the lock it loses
 roughly half of twelve concurrent toggles.
+
+Lint with `go vet ./...` and
+`go run honnef.co/go/tools/cmd/staticcheck@latest ./...`; both are clean.
