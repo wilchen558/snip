@@ -196,13 +196,18 @@ func (c *rmCmd) Run(ctx *Context) error {
 	})
 }
 
+// scopeCmd has no Run of its own: kong invokes every Run along the selected
+// path, so a Run here would also fire during `snip scope init` — and report a
+// stale "project: none", since the Set was resolved before init created the
+// directory. The report is a default subcommand instead.
 type scopeCmd struct {
+	Show scopeShowCmd `cmd:"" default:"1" help:"Report which scopes are active."`
 	Init scopeInitCmd `cmd:"" help:"Opt this directory in to project snippets."`
 }
 
-// Run reports the active scopes. Kong routes `snip scope init` to the
-// subcommand, so reaching here means a bare `snip scope`.
-func (*scopeCmd) Run(ctx *Context) error {
+type scopeShowCmd struct{}
+
+func (*scopeShowCmd) Run(ctx *Context) error {
 	fmt.Printf("global:  %s\n", ctx.Set.global.Dir())
 	if ctx.Set.project == nil {
 		fmt.Println("project: none; opt in with: snip scope init")

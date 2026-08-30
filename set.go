@@ -8,7 +8,7 @@ import (
 )
 
 // Scope names where a snippet lives. Project snippets shadow global ones of
-// the same name for bare-name lookups, but both remain listable and enablable
+// the same name for bare-name lookups, but both remain listable and enable
 // independently — the two files are separate snippets that happen to share a
 // name.
 type Scope string
