@@ -17,6 +17,15 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 need uname
 need mktemp
 need tar
+# The checksum is the only thing standing between a tampered download and an
+# executable on your PATH, so a hasher is a hard requirement, not a bonus.
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+    sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+    die "sha256sum or shasum is required to verify the download"
+fi
 if command -v curl >/dev/null 2>&1; then
     fetch() { curl -fsSL "$1"; }
     fetch_to() { curl -fsSL -o "$2" "$1"; }
@@ -40,6 +49,12 @@ case $(uname -m) in
 esac
 
 version=${SNIP_VERSION:-}
+# A tag becomes a path segment in the download URL. Anything outside this shape
+# is a typo at best and a traversal to a different release at worst.
+case $version in
+    "") ;;
+    *[!A-Za-z0-9._-]*|*..*) die "SNIP_VERSION must be a release tag such as v0.1.0" ;;
+esac
 if [ -z "$version" ]; then
     # Resolve the latest tag without needing jq.
     version=$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
@@ -56,18 +71,15 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 printf 'downloading snip %s (%s/%s)\n' "$version" "$os" "$arch"
 fetch_to "$base/$archive" "$tmp/$archive" || die "no asset $archive in release $version"
 
-# Verify the checksum when a hasher is available; a failure here is fatal.
-if fetch_to "$base/checksums.txt" "$tmp/checksums.txt" 2>/dev/null; then
-    if command -v sha256sum >/dev/null 2>&1; then
-        hash=$(sha256sum "$tmp/$archive" | cut -d' ' -f1)
-    elif command -v shasum >/dev/null 2>&1; then
-        hash=$(shasum -a 256 "$tmp/$archive" | cut -d' ' -f1)
-    fi
-    if [ -n "${hash:-}" ]; then
-        grep -q "^$hash  $archive$" "$tmp/checksums.txt" || die "checksum mismatch for $archive"
-        printf 'checksum ok\n'
-    fi
-fi
+# Verify the checksum. Every failure here is fatal, including a missing
+# checksums.txt: skipping the check when the manifest cannot be fetched hands
+# the decision to whoever is in a position to withhold it.
+fetch_to "$base/checksums.txt" "$tmp/checksums.txt" \
+    || die "no checksums.txt in release $version; refusing to install unverified"
+hash=$(sha256 "$tmp/$archive")
+[ -n "$hash" ] || die "could not hash $archive"
+grep -q "^$hash  $archive\$" "$tmp/checksums.txt" || die "checksum mismatch for $archive"
+printf 'checksum ok\n'
 
 tar -xzf "$tmp/$archive" -C "$tmp" snip || die "archive did not contain snip"
 
