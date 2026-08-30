@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +25,47 @@ const (
 // this path, which "snip scope init" creates. filepath.Join is a call rather
 // than a const so the separator is right on every platform.
 var projectDirName = filepath.Join(".claude", "snippets")
+
+// projectStateDir holds one pair of state files per project, inside the user's
+// own store. A project's enabled list lives here rather than in the repository
+// so that no commit — and no clone — can change what a prompt carries. It also
+// means a read-only checkout is still toggleable.
+const projectStateDir = "projects"
+
+// projectStatePath is the prefix for one project's state files. The leading
+// slug keeps the directory readable by hand; the digest of the canonical root
+// is what actually identifies the project, so two checkouts sharing a base name
+// do not share state.
+func projectStatePath(globalDir, root string) string {
+	// Both halves come from the canonical root. Deriving the slug from the raw
+	// path instead gave a symlinked checkout its own state file, even though
+	// the digest beside it was identical — one repository, two enabled sets,
+	// depending on which spelling you happened to cd through.
+	resolved := canonical(root)
+	sum := sha256.Sum256([]byte(resolved))
+	return filepath.Join(globalDir, projectStateDir, projectSlug(resolved)+"-"+hex.EncodeToString(sum[:6]))
+}
+
+// projectSlug reduces a directory name to something safe on every filesystem.
+// It is decoration: the digest beside it carries the identity.
+func projectSlug(root string) string {
+	out := make([]rune, 0, 24)
+	for _, r := range strings.ToLower(filepath.Base(root)) {
+		if len(out) == cap(out) {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out = append(out, r)
+		case len(out) > 0 && out[len(out)-1] != '-':
+			out = append(out, '-')
+		}
+	}
+	if slug := strings.Trim(string(out), "-"); slug != "" {
+		return slug
+	}
+	return "project"
+}
 
 // Snippet identifies one snippet within one scope. Enabled state is captured
 // when the Set is listed, so rendering N snippets reads each manifest once
@@ -52,7 +95,7 @@ func NewSet() (*Set, error) {
 	}
 	set := &Set{global: g}
 	if root, dir, ok := findProjectDir(g.Dir()); ok {
-		set.project = newStoreAt(dir)
+		set.project = newProjectStoreAt(dir, projectStatePath(g.Dir(), root))
 		set.root = root
 	}
 	return set, nil
@@ -211,6 +254,15 @@ func (s *Set) Compose() (string, error) {
 		}
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// Suggested is what the project scope proposes and the user has not decided
+// on. Nothing outside a project ever suggests anything.
+func (s *Set) Suggested() ([]string, error) {
+	if s.project == nil {
+		return nil, nil
+	}
+	return s.project.Suggested()
 }
 
 // EnabledLabels lists what is on, tagging a name only when it is ambiguous or

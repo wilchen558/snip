@@ -360,3 +360,184 @@ func TestEveryListedSnippetCanBeEnabled(t *testing.T) {
 		}
 	}
 }
+
+// TestUnremovableStaleLockTimesOut is the regression test for a busy-loop:
+// reclaiming a stale lock used to `continue` past both the deadline and the
+// sleep, so a lock that could not be removed — a read-only directory, another
+// user's file — span the CPU at 100% until the process was killed instead of
+// failing after lockTimeout.
+func TestUnremovableStaleLockTimesOut(t *testing.T) {
+	s := newTestStore(t)
+	mustWrite(t, s, "a", "A")
+	// The point is that the wait ends, not how long it is; shorten it so the
+	// suite does not spend the real timeout proving that.
+	defer func(d time.Duration) { lockTimeout = d }(lockTimeout)
+	lockTimeout = 20 * time.Millisecond
+
+	lock := s.manifestPath() + ".lock"
+	if err := os.WriteFile(lock, nil, filePerm); err != nil {
+		t.Fatal(err)
+	}
+	old := timeLongAgo()
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// Strip write permission from the directory so the reclaim cannot succeed.
+	if err := os.Chmod(s.dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(s.dir, dirPerm) })
+	if _, err := os.Stat(lock); err != nil {
+		t.Skipf("cannot stage an unremovable lock here: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- s.Enable("a") }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Skip("this filesystem allowed the removal; nothing to time out")
+		}
+	case <-time.After(10 * lockTimeout):
+		t.Fatal("lock() never returned; a failed reclaim must fall through to the deadline, not loop")
+	}
+}
+
+// TestSummaryReadsOnlyAPrefix pins the bound on listing cost. A summary is one
+// line, but listings call Summary once per row, so reading each body in full
+// made `snip` scale with the size of the corpus rather than with the rows it
+// shows. The bound is observable: a first line past summaryMax comes back
+// clipped, because the read stopped there.
+func TestSummaryReadsOnlyAPrefix(t *testing.T) {
+	s := newTestStore(t)
+	// Written directly: Write itself refuses a body this large.
+	body := "the summary line\n" + strings.Repeat("filler\n", 4096)
+	if err := os.WriteFile(s.Path("big"), []byte(body), filePerm); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := s.Summary("big"), "the summary line"; got != want {
+		t.Errorf("Summary() = %q, want %q", got, want)
+	}
+
+	// One line, longer than the cap and with no newline to stop at, so the
+	// length of what comes back is exactly the length of what was read.
+	long := strings.Repeat("x", 4*summaryMax)
+	if err := os.WriteFile(s.Path("oneline"), []byte(long), filePerm); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(s.Summary("oneline")); got != summaryMax {
+		t.Errorf("Summary() read %d bytes of a %d-byte line; want it capped at %d", got, len(long), summaryMax)
+	}
+}
+
+// BenchmarkSummary records what a listing row costs. It is the regression
+// guard's companion: the numbers should not move with the size of the bodies.
+func BenchmarkSummary(b *testing.B) {
+	b.Setenv("SNIP_DIR", b.TempDir())
+	s, err := NewStore()
+	if err != nil {
+		b.Fatal(err)
+	}
+	body := "summary line\n" + strings.Repeat("filler filler filler\n", 8192)
+	if err := os.WriteFile(s.Path("big"), []byte(body), filePerm); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if s.Summary("big") == "" {
+			b.Fatal("empty summary")
+		}
+	}
+}
+
+// TestWriteRefusesAnOversizedBody guards the prompt budget: every enabled
+// snippet is read and concatenated on every prompt, inside the hook's timeout,
+// so `snip add notes < server.log` must fail rather than quietly bloat each
+// prompt until the hook times out.
+func TestWriteRefusesAnOversizedBody(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Write("big", strings.Repeat("x", maxSnippetBytes+1)); err == nil {
+		t.Error("Write accepted a body past maxSnippetBytes")
+	}
+	if s.Exists("big") {
+		t.Error("the oversized snippet was created anyway")
+	}
+	if err := s.Write("ok", strings.Repeat("x", maxSnippetBytes-1)); err != nil {
+		t.Errorf("Write rejected a body within the limit: %v", err)
+	}
+}
+
+// TestNonRegularFilesAreNotSnippets keeps a directory or a fifo named
+// "brief.md" out of every listing: it would offer a row whose body no read can
+// ever return.
+func TestNonRegularFilesAreNotSnippets(t *testing.T) {
+	s := newTestStore(t)
+	mustWrite(t, s, "real", "R.")
+	if err := os.Mkdir(s.Path("faux"), dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	if s.Exists("faux") {
+		t.Error("a directory resolved as a snippet")
+	}
+	if _, err := s.Body("faux"); err == nil {
+		t.Error("Body() read a directory")
+	}
+	names, err := s.Names()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"real"}) {
+		t.Errorf("Names() = %v, want [real]", names)
+	}
+}
+
+// TestProjectStoreRejectsSymlinkedSnippets is the regression test for a read
+// primitive that arrives with a clone. A project store is repository-supplied,
+// its bodies are pasted verbatim into every prompt, and git can commit a
+// symlink: .claude/snippets/notes.md -> ~/.ssh/id_ed25519 needed nothing from
+// the user but a cd into the checkout.
+func TestProjectStoreRejectsSymlinkedSnippets(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY MATERIAL\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, "notes"+snippetExt)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// The manifest ships in the repository too, so the snippet arrives enabled.
+	if err := os.WriteFile(filepath.Join(dir, manifestName), []byte("notes\n"), filePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	project := newProjectStoreAt(dir, filepath.Join(t.TempDir(), projectStateDir, "p"))
+	if project.Exists("notes") {
+		t.Error("a symlinked project snippet resolved")
+	}
+	if body, err := project.Body("notes"); err == nil {
+		t.Errorf("Body() followed the link and returned %q", body)
+	}
+	if names, _ := project.Names(); len(names) != 0 {
+		t.Errorf("Names() = %v; a symlink must not be listed", names)
+	}
+	if on, _ := project.Enabled(); len(on) != 0 {
+		t.Errorf("Enabled() = %v; the repository's manifest must not activate it", on)
+	}
+	text, err := project.Compose()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "PRIVATE KEY") {
+		t.Fatalf("Compose() leaked the link target into the prompt: %q", text)
+	}
+	if text != "" {
+		t.Errorf("Compose() = %q, want empty", text)
+	}
+
+	// The global store is the user's own directory, where symlinking a snippet
+	// into a dotfiles repository is ordinary; that must keep working.
+	global := newStoreAt(dir)
+	if !global.Exists("notes") {
+		t.Error("the global scope refused a symlinked snippet")
+	}
+}

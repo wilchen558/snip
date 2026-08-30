@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,6 +41,11 @@ func sttyOut(tty *os.File, args ...string) (string, error) {
 // Pick renders a checkbox list on /dev/tty and returns the chosen names.
 // The bool reports whether the user confirmed; false means they cancelled.
 func Pick(items []item) ([]string, bool, error) {
+	// Every cursor move is modulo len(items), so an empty list would divide by
+	// zero. pickCmd checks this too; Pick owns its own precondition.
+	if len(items) == 0 {
+		return nil, false, errors.New("no snippets to pick from")
+	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return nil, false, fmt.Errorf("no terminal available (a picker needs a TTY): %w", err)

@@ -143,8 +143,40 @@ snip: brief,ticket
 ```
 
 Prompts from that repo carry `brief` **and** `ticket`; elsewhere, only `brief`.
-The two `.enabled` files are independent — toggling in a project never writes to
+The two enabled sets are independent — toggling in a project never writes to
 your global one.
+
+### What a repository can and cannot do
+
+A repository ships snippet *text*. It cannot decide what is switched on.
+
+`.claude/snippets` is the opt-in marker, so a repository that commits one is
+picked up the moment you `cd` into a clone — no step in between. If the
+committed `.enabled` were obeyed, cloning a repository would be enough to change
+every prompt you send. So it is read as a **suggestion** and never applied:
+
+```console
+$ git clone https://github.com/someone/repo && cd repo
+$ snip
+  [x] brief    (global)   Skip the preamble. Answer in under five sentences…
+  [ ] ticket   (project)  Reference the Jira ticket ID in every commit messa…
+  project: /home/you/repo
+  project suggests: ticket
+  adopt with: snip scope adopt
+
+$ snip scope adopt ticket        # or: snip scope adopt, for all of them
+adopted 1 suggested snippet: ticket
+```
+
+`snip scope dismiss` declines instead. Either way the decision is remembered, so
+you are asked once; a later `git pull` that adds a *new* name offers that one and
+leaves your existing choices alone. Your project's enabled set lives in your own
+store, not in the checkout — `snip scope show` prints its path — which also means
+a read-only checkout is still toggleable.
+
+If you were using project snippets before this change, your old
+`<root>/.claude/snippets/.enabled` is now a suggestion: run `snip scope adopt`
+once per project to restore it.
 
 ### Same name in both scopes
 
@@ -197,13 +229,24 @@ Unlike `! snip`, this costs a model turn.
 | --- | --- |
 | Global snippets | `~/.claude/snippets/*.md` (override with `SNIP_DIR`) |
 | Project snippets | `<root>/.claude/snippets/*.md` |
-| Enabled set | `.enabled` in either directory |
+| Global enabled set | `~/.claude/snippets/.enabled` |
+| Project enabled set | `~/.claude/snippets/projects/<repo>-<digest>.enabled` |
+| Decided suggestions | the matching `.seen` file |
+| Suggested by a repo | `<root>/.claude/snippets/.enabled` (read, never applied) |
 
 A snippet is a Markdown file whose first line is the summary shown in listings.
 `.enabled` is one name per line, hand-editable, `#` comments ignored. A name
 with no matching file is skipped, so deleting a snippet never breaks the hook.
 Because that file has to carry the name, a snippet cannot be called `#urgent`
 or be padded with whitespace; an interior `#` is fine.
+
+A snippet is capped at 64 KiB, since every enabled one is read and appended on
+every prompt inside the hook's timeout. Project snippets must additionally be
+regular files, not symbolic links: that directory arrives with a `git clone`,
+and its text is pasted verbatim into your prompts, so a link committed as
+`.claude/snippets/notes.md -> ~/.ssh/id_ed25519` would put the target there.
+Your own `~/.claude/snippets` is exempt, so linking a snippet into a dotfiles
+repository still works.
 
 `$HOME` is never a project root, though `~/.claude/snippets` has exactly the
 shape of the project marker — `snip scope init` declines there rather than
@@ -224,6 +267,8 @@ creating a marker nothing would honour.
 | `snip edit <name>` | Open in `$EDITOR` |
 | `snip rm <name>...` | Delete |
 | `snip scope [show\|init]` | Report scopes, or opt this directory in |
+| `snip scope adopt [name...]` | Enable what the repository suggests |
+| `snip scope dismiss [name...]` | Stop offering what the repository suggests |
 | `snip help [command]` | Usage, overall or for one command |
 | `snip hook` | Emit `UserPromptSubmit` JSON |
 | `snip status` | One-line summary for the status line |
@@ -238,7 +283,7 @@ bare name; the parser claims it first. Use `snip toggle on`.
 ## Development
 
 ```sh
-go test ./...        # 30 tests
+go test ./...        # 52 tests
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ```
