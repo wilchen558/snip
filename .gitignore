@@ -1,1 +1,13 @@
+# Build output
 /snip
+/dist/
+
+# Test and coverage artefacts
+*.test
+*.out
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
