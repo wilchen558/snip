@@ -22,7 +22,7 @@ One binary. [kong](https://github.com/alecthomas/kong) is the only dependency.
 ## Install
 
 ```sh
-git clone https://github.com/twilchen/snip && cd snip
+git clone https://github.com/wilchen558/snip && cd snip
 go build -ldflags "-X main.version=$(git describe --tags --always)" -o ~/.local/bin/snip .
 ```
 
