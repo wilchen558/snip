@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -22,9 +23,14 @@ const (
 	dirPerm      = 0o755
 )
 
-// validName rejects anything that could escape the store directory or collide
-// with the manifest. A snippet name becomes a file name directly, so this is
-// the only thing between a mistyped argument and `snip rm ../../notes`.
+// validName rejects anything that could escape the store directory or that the
+// manifest cannot carry. A snippet name becomes a file name directly, so this
+// is the only thing between a mistyped argument and `snip rm ../../notes`.
+//
+// The second half matters just as much, if less loudly: .enabled holds one name
+// per line, trims each line before matching it, and treats "#" as a comment. A
+// name that does not survive that round trip could be created and enabled with
+// every command reporting success, yet never reach a prompt.
 func validName(name string) error {
 	switch {
 	case name == "":
@@ -35,6 +41,12 @@ func validName(name string) error {
 		return fmt.Errorf("snippet name %q cannot start with a dot", name)
 	case name != filepath.Clean(name):
 		return fmt.Errorf("snippet name %q is not a plain file name", name)
+	case strings.HasPrefix(name, "#"):
+		return fmt.Errorf("snippet name %q cannot start with a hash; the manifest reads that as a comment", name)
+	case name != strings.TrimSpace(name):
+		return fmt.Errorf("snippet name %q cannot start or end with whitespace", name)
+	case strings.ContainsFunc(name, unicode.IsControl):
+		return fmt.Errorf("snippet name %q cannot contain a control character", name)
 	}
 	return nil
 }
@@ -83,7 +95,14 @@ func (s *Store) Names() ([]string, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), snippetExt) {
 			continue
 		}
-		out = append(out, strings.TrimSuffix(entry.Name(), snippetExt))
+		name := strings.TrimSuffix(entry.Name(), snippetExt)
+		// A file no snippet name could have produced is not a snippet. Every
+		// other lookup path already rejects such a name, so listing it would
+		// offer a row that nothing — toggle, show, rm — can act on.
+		if validName(name) != nil {
+			continue
+		}
+		out = append(out, name)
 	}
 	slices.Sort(out)
 	return out, nil

@@ -298,3 +298,65 @@ func TestRemoveAllValidatesBeforeDeleting(t *testing.T) {
 		t.Error("a valid snippet was deleted before the invalid name was rejected")
 	}
 }
+
+// manifestUnsafeNames are names the .enabled manifest cannot carry: it is one
+// name per line, lines are trimmed before they are matched, and "#" introduces
+// a comment. A name that does not survive that round trip could once be
+// created and "enabled" without ever taking effect.
+var manifestUnsafeNames = []string{"#urgent", " lead", "trail ", "a\nb", "\tweird"}
+
+// TestManifestUnsafeNamesAreRejected is the regression test for `snip add
+// '#urgent' …` succeeding: the file appeared, but nothing could ever enable it.
+func TestManifestUnsafeNamesAreRejected(t *testing.T) {
+	s := newTestStore(t)
+	for _, name := range manifestUnsafeNames {
+		// Plant the file directly, as an older snip would have left it, so the
+		// lookup paths are exercised against a name that really is on disk.
+		if err := os.WriteFile(s.Path(name), []byte("body\n"), filePerm); err != nil {
+			t.Skipf("filesystem rejects %q: %v", name, err)
+		}
+		if err := validName(name); err == nil {
+			t.Errorf("validName(%q) = nil; the manifest cannot carry this name", name)
+		}
+		if s.Exists(name) {
+			t.Errorf("Exists(%q) = true; a name that cannot be enabled must not resolve", name)
+		}
+		if _, err := s.Body(name); err == nil {
+			t.Errorf("Body(%q) succeeded; want an error", name)
+		}
+		if err := s.Write(name, "x"); err == nil {
+			t.Errorf("Write(%q) succeeded; want an error", name)
+		}
+		if err := s.RemoveAll(name); err == nil {
+			t.Errorf("RemoveAll(%q) succeeded; want an error", name)
+		}
+	}
+}
+
+// TestEveryListedSnippetCanBeEnabled pins the invariant the above bug broke:
+// whatever Names reports must actually turn on, because the list is what the
+// user picks from.
+func TestEveryListedSnippetCanBeEnabled(t *testing.T) {
+	s := newTestStore(t)
+	mustWrite(t, s, "ok", "Body.")
+	for _, name := range manifestUnsafeNames {
+		os.WriteFile(s.Path(name), []byte("body\n"), filePerm)
+	}
+	// Files no snippet name could produce are not snippets, so only "ok" is
+	// listed — and listing it is a promise that enabling it works.
+	names, err := s.Names()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"ok"}) {
+		t.Errorf("Names() = %v, want [ok]", names)
+	}
+	for _, name := range names {
+		if err := s.Enable(name); err != nil {
+			t.Fatalf("Enable(%q): %v", name, err)
+		}
+		if !s.IsEnabled(name) {
+			t.Errorf("Names() listed %q but enabling it did not take effect", name)
+		}
+	}
+}

@@ -265,3 +265,61 @@ func TestFindProjectDirSkipsTheGlobalStore(t *testing.T) {
 		t.Errorf("real project not found: root=%q ok=%v", root, ok)
 	}
 }
+
+// TestScopeInitRefusesWhereDiscoveryWillNotLook is the regression test for
+// `snip scope init` in $HOME: it created ~/.claude/snippets, printed "project
+// snippets now apply here", and then every command still resolved to the
+// global scope — so snippets meant for a project silently landed in the user's
+// global store, the very failure findProjectDir's guard exists to prevent.
+func TestScopeInitRefusesWhereDiscoveryWillNotLook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home) // os.UserHomeDir reads this
+	globalDir := filepath.Join(home, projectDirName)
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(home)
+
+	ctx := &Context{Set: &Set{global: newStoreAt(globalDir)}}
+	if err := (&scopeInitCmd{}).Run(ctx); err == nil {
+		t.Error("scope init in $HOME reported success; discovery never accepts $HOME as a project root")
+	}
+	// The marker it would have created is still not a project, which is what
+	// made the success message a lie.
+	if _, _, ok := findProjectDir(globalDir); ok {
+		t.Error("$HOME resolved as a project root")
+	}
+}
+
+// TestProjectRootRefusalAgreesWithDiscovery pins the two halves together: the
+// directories "snip scope init" declines are exactly the ones findProjectDir
+// skips, so init can never report success for a marker discovery ignores.
+func TestProjectRootRefusalAgreesWithDiscovery(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	globalDir := filepath.Join(home, projectDirName)
+	work := filepath.Join(home, "projects", "backend")
+	for _, dir := range []string{globalDir, work, filepath.Join(work, projectDirName)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		dir     string
+		refused bool
+		why     string
+	}{
+		{home, true, "$HOME holds Claude Code's own configuration"},
+		{work, false, "an ordinary repository"},
+	} {
+		refusal := projectRootRefusal(tc.dir, globalDir)
+		if (refusal != nil) != tc.refused {
+			t.Errorf("projectRootRefusal(%s) = %v, want refused=%v; %s", tc.dir, refusal, tc.refused, tc.why)
+		}
+		t.Chdir(tc.dir)
+		if _, _, ok := findProjectDir(globalDir); ok == tc.refused {
+			t.Errorf("at %s: discovery found=%v but init refuses=%v", tc.dir, ok, tc.refused)
+		}
+	}
+}

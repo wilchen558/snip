@@ -202,9 +202,12 @@ Unlike `! snip`, this costs a model turn.
 A snippet is a Markdown file whose first line is the summary shown in listings.
 `.enabled` is one name per line, hand-editable, `#` comments ignored. A name
 with no matching file is skipped, so deleting a snippet never breaks the hook.
+Because that file has to carry the name, a snippet cannot be called `#urgent`
+or be padded with whitespace; an interior `#` is fine.
 
 `$HOME` is never a project root, though `~/.claude/snippets` has exactly the
-shape of the project marker.
+shape of the project marker — `snip scope init` declines there rather than
+creating a marker nothing would honour.
 
 ## Reference
 
@@ -235,7 +238,7 @@ bare name; the parser claims it first. Use `snip toggle on`.
 ## Development
 
 ```sh
-go test ./...        # 26 tests
+go test ./...        # 30 tests
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ```
