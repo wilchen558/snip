@@ -206,6 +206,7 @@ shape of the project marker.
 | `snip edit <name>` | Open in `$EDITOR` |
 | `snip rm <name>...` | Delete |
 | `snip scope [show\|init]` | Report scopes, or opt this directory in |
+| `snip help [command]` | Usage, overall or for one command |
 | `snip hook` | Emit `UserPromptSubmit` JSON |
 | `snip status` | One-line summary for the status line |
 | `snip menu` | JSON inventory |

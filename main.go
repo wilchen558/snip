@@ -27,6 +27,7 @@ type CLI struct {
 	Edit   editCmd   `cmd:"" help:"Open a snippet in $EDITOR."`
 	Rm     rmCmd     `cmd:"" aliases:"remove,delete" help:"Delete snippets."`
 	Scope  scopeCmd  `cmd:"" help:"Show or set up snippet scopes."`
+	Help   helpCmd   `cmd:"" help:"Show help for a command."`
 
 	Hook   hookCmd   `cmd:"" hidden:"" help:"Emit UserPromptSubmit JSON."`
 	Status statusCmd `cmd:"" hidden:"" help:"Print a one-line summary for the status line."`

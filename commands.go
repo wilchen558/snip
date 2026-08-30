@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/alecthomas/kong"
 )
 
 type toggleCmd struct {
@@ -235,6 +238,41 @@ func (*scopeInitCmd) Run(ctx *Context) error {
 	fmt.Printf("created %s\n", dir)
 	fmt.Println("project snippets now apply here; add one with: snip add <name> <text>")
 	return nil
+}
+
+// helpCmd exists because --help is a flag, and `snip help` would otherwise
+// fall through to the default toggle command and report "no snippet \"help\"".
+type helpCmd struct {
+	Command []string `arg:"" optional:"" help:"Command to describe. Omit for the top-level help."`
+}
+
+// Run delegates to the --help flag, which knows how to render every node.
+// Tracing the arguments directly would not work: the default toggle command
+// claims an empty path, so `snip help` would describe toggle rather than the
+// application, and an unknown topic would silently become a snippet name.
+func (c *helpCmd) Run(kctx *kong.Context) error {
+	if len(c.Command) > 0 {
+		if err := requireCommand(kctx, c.Command[0]); err != nil {
+			return err
+		}
+	}
+	_, err := kctx.Kong.Parse(append(c.Command, "--help"))
+	return err
+}
+
+// requireCommand rejects a help topic that is not a command, so `snip help
+// bogus` says so instead of printing something unrelated.
+func requireCommand(kctx *kong.Context, name string) error {
+	var known []string
+	for _, node := range kctx.Kong.Model.Children {
+		if node.Name == name || slices.Contains(node.Aliases, name) {
+			return nil
+		}
+		if !node.Hidden {
+			known = append(known, node.Name)
+		}
+	}
+	return fmt.Errorf("no command %q (have: %s)", name, strings.Join(known, ", "))
 }
 
 type hookCmd struct{}
