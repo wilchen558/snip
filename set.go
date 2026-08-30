@@ -23,14 +23,17 @@ const (
 // than a const so the separator is right on every platform.
 var projectDirName = filepath.Join(".claude", "snippets")
 
-// Snippet identifies one snippet within one scope.
+// Snippet identifies one snippet within one scope. Enabled state is captured
+// when the Set is listed, so rendering N snippets reads each manifest once
+// rather than once per row.
 type Snippet struct {
 	Name  string
 	Scope Scope
 	Store *Store
+	on    bool
 }
 
-func (s Snippet) Enabled() bool   { return s.Store.IsEnabled(s.Name) }
+func (s Snippet) Enabled() bool   { return s.on }
 func (s Snippet) Summary() string { return s.Store.Summary(s.Name) }
 
 // Set is the global store plus, when the current directory opts in, a project
@@ -121,9 +124,17 @@ func (s *Set) List() ([]Snippet, error) {
 		if err != nil {
 			return nil, err
 		}
+		enabled, err := store.Enabled()
+		if err != nil {
+			return nil, err
+		}
+		on := make(map[string]bool, len(enabled))
+		for _, name := range enabled {
+			on[name] = true
+		}
 		scope := s.scopeOf(store)
 		for _, name := range names {
-			out = append(out, Snippet{Name: name, Scope: scope, Store: store})
+			out = append(out, Snippet{Name: name, Scope: scope, Store: store, on: on[name]})
 		}
 	}
 	return out, nil

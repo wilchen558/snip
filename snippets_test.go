@@ -255,3 +255,46 @@ func TestWriteFileAtomicReplacesContent(t *testing.T) {
 }
 
 func timeLongAgo() time.Time { return time.Now().Add(-10 * lockStale) }
+
+// TestNamesCannotEscapeTheStore is the regression test for a traversal bug:
+// `snip rm ../victim/notes` deleted a file outside the snippet directory,
+// because only `add` validated names.
+func TestNamesCannotEscapeTheStore(t *testing.T) {
+	s := newTestStore(t)
+	outside := filepath.Join(filepath.Dir(s.dir), "victim.md")
+	if err := os.WriteFile(outside, []byte("important"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	escapes := []string{"../victim", "sub/../../victim", `..\victim`, "..", ".enabled", ""}
+	for _, name := range escapes {
+		if s.Exists(name) {
+			t.Errorf("Exists(%q) = true; a traversing name must never resolve", name)
+		}
+		if err := s.RemoveAll(name); err == nil {
+			t.Errorf("RemoveAll(%q) succeeded; want an error", name)
+		}
+		if _, err := s.Body(name); err == nil {
+			t.Errorf("Body(%q) succeeded; want an error", name)
+		}
+		if err := s.Write(name, "x"); err == nil {
+			t.Errorf("Write(%q) succeeded; want an error", name)
+		}
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("file outside the store was touched: %v", err)
+	}
+}
+
+// TestRemoveAllValidatesBeforeDeleting guards against a partial delete when a
+// later argument is bad.
+func TestRemoveAllValidatesBeforeDeleting(t *testing.T) {
+	s := newTestStore(t)
+	mustWrite(t, s, "keep", "K")
+	if err := s.RemoveAll("keep", "../escape"); err == nil {
+		t.Fatal("RemoveAll accepted a traversing name")
+	}
+	if !s.Exists("keep") {
+		t.Error("a valid snippet was deleted before the invalid name was rejected")
+	}
+}

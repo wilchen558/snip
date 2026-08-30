@@ -219,7 +219,7 @@ bare name; the parser claims it first. Use `snip toggle on`.
 ## Development
 
 ```sh
-go test ./...        # 24 tests
+go test ./...        # 26 tests
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ```

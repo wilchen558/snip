@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,23 @@ const (
 	filePerm     = 0o644
 	dirPerm      = 0o755
 )
+
+// validName rejects anything that could escape the store directory or collide
+// with the manifest. A snippet name becomes a file name directly, so this is
+// the only thing between a mistyped argument and `snip rm ../../notes`.
+func validName(name string) error {
+	switch {
+	case name == "":
+		return errors.New("snippet name is empty")
+	case strings.ContainsAny(name, `/\`):
+		return fmt.Errorf("snippet name %q cannot contain a path separator", name)
+	case strings.HasPrefix(name, "."):
+		return fmt.Errorf("snippet name %q cannot start with a dot", name)
+	case name != filepath.Clean(name):
+		return fmt.Errorf("snippet name %q is not a plain file name", name)
+	}
+	return nil
+}
 
 // Store is the on-disk snippet collection: one .md file per snippet plus a
 // .enabled manifest listing, one per line, the snippets currently appended to
@@ -71,12 +89,20 @@ func (s *Store) Names() ([]string, error) {
 	return out, nil
 }
 
+// Exists reports whether the store holds this snippet. An invalid name is
+// simply absent, so every lookup path inherits the traversal guard.
 func (s *Store) Exists(name string) bool {
-	st, err := os.Stat(s.Path(name))
-	return err == nil && !st.IsDir()
+	if validName(name) != nil {
+		return false
+	}
+	info, err := os.Stat(s.Path(name))
+	return err == nil && !info.IsDir()
 }
 
 func (s *Store) Body(name string) (string, error) {
+	if err := validName(name); err != nil {
+		return "", err
+	}
 	b, err := os.ReadFile(s.Path(name))
 	if err != nil {
 		return "", err
@@ -95,14 +121,23 @@ func (s *Store) Summary(name string) string {
 }
 
 func (s *Store) Write(name, body string) error {
+	if err := validName(name); err != nil {
+		return err
+	}
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
 	return os.WriteFile(s.Path(name), []byte(body), filePerm)
 }
 
-// RemoveAll deletes snippets from disk and drops them from the manifest.
+// RemoveAll deletes snippets from disk and drops them from the manifest. Every
+// name is validated before anything is removed.
 func (s *Store) RemoveAll(names ...string) error {
+	for _, name := range names {
+		if err := validName(name); err != nil {
+			return err
+		}
+	}
 	for _, name := range names {
 		if err := os.Remove(s.Path(name)); err != nil {
 			return err

@@ -23,7 +23,7 @@ Changing the shape of the first three breaks a live integration in the user's
 
 ```sh
 go build -o /tmp/snip .                                    # build
-go test ./...                                              # 24 tests, ~30ms
+go test ./...                                              # 26 tests, ~30ms
 go test -run TestConcurrent -count=5 ./...                 # the flaky-prone one
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...     # must stay clean
@@ -105,13 +105,20 @@ please do not reintroduce the causes.
    character device, so `os.ModeCharDevice` alone reports a piped stdin as
    interactive. `onTerminal` probes with `stty -g`.
 
-6. **Kong runs every `Run` along the selected path.** A parent command with
+6. **Snippet names must go through `validName`.** A name becomes a file name
+   directly, so an unvalidated one escapes the store: `snip rm ../victim/notes`
+   deleted a file outside the snippet directory. `Store.Exists` returns false
+   for an invalid name, which makes every lookup path inherit the guard, and
+   `Write`, `Body` and `RemoveAll` reject one outright. Guarded by
+   `TestNamesCannotEscapeTheStore`.
+
+7. **Kong runs every `Run` along the selected path.** A parent command with
    both a `Run` method and subcommands fires that `Run` during the subcommand
    too — `snip scope init` printed a stale scope report because the `Set` was
    resolved before `init` created the directory. Give the parent no `Run` and
    add a `default:"1"` subcommand for its bare form, as `scopeCmd` does.
 
-7. **A snippet named after a subcommand** (`on`, `show`, `list`) cannot be
+8. **A snippet named after a subcommand** (`on`, `show`, `list`) cannot be
    toggled by bare name — kong claims the token. `snip toggle on` is the
    documented escape hatch. Adding a subcommand shadows that name, so weigh new
    subcommands against likely snippet names.
