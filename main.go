@@ -1,6 +1,12 @@
 // snip toggles prompt snippets that a Claude Code UserPromptSubmit hook
 // appends to every prompt. One binary serves the CLI, the picker, the hook
 // itself and the status line.
+//
+// Snippets live in two scopes: global (~/.claude/snippets) and, for a
+// directory that opted in with `snip scope init`, project
+// (<root>/.claude/snippets). Both are listed and both apply; a bare name
+// resolves to the project one when both scopes define it, and -g forces
+// global.
 package main
 
 import (
@@ -10,26 +16,36 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
 const usage = `snip — prompt snippets appended to every Claude Code prompt
 
-  snip                     list snippets, [x] = enabled
-  snip <name>...           toggle those snippets
+  snip                     list snippets in both scopes, [x] = enabled
+  snip <name>...           toggle
   snip on <name>...        enable
   snip off <name>...       disable
-  snip only <name>...      enable exactly these, disable the rest
-  snip clear               disable everything
+  snip only <name>...      enable exactly these in the active scope
+  snip clear               disable everything in the active scope
   snip pick                interactive checkbox picker (needs a real terminal)
-  snip show [name...]      print a snippet in full, or all enabled text if no name
-  snip add <name> [text]   create a snippet (prompts, or reads stdin, when text is omitted)
+  snip show [name...]      print a snippet in full, or all enabled text
+  snip add <name> [text]   create a snippet (prompts, or reads stdin, if omitted)
   snip edit <name>         open a snippet in $EDITOR
   snip rm <name>           delete a snippet
 
+  snip scope               report which scopes are active
+  snip scope init          opt this directory in to project snippets
+
   snip hook                emit UserPromptSubmit JSON (used by the hook)
   snip status              one-line summary (used by the status line)
-  snip menu                machine-readable JSON inventory`
+  snip menu                machine-readable JSON inventory
+
+Flags
+  -g, --global             act on the global scope even inside a project
+
+A project snippet shadows a global one of the same name for bare-name
+lookups; both still appear in the list and both can be enabled at once.`
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -39,102 +55,128 @@ func main() {
 }
 
 func run(args []string) error {
-	s, err := NewStore()
+	// A leading -g applies to whichever subcommand follows.
+	global := false
+	for len(args) > 0 && (args[0] == "-g" || args[0] == "--global") {
+		global = true
+		args = args[1:]
+	}
+
+	set, err := NewSet()
 	if err != nil {
 		return err
 	}
 	if len(args) == 0 {
-		return cmdList(s)
+		return cmdList(set)
 	}
 
 	switch args[0] {
 	case "help", "-h", "--help":
 		fmt.Println(usage)
 		return nil
+	case "version", "-v", "--version":
+		fmt.Println("snip " + version)
+		return nil
 	case "list", "ls":
-		return cmdList(s)
+		return cmdList(set)
 	case "on":
-		return applyKnown(s, args[1:], s.Enable)
+		return applyKnown(set, args[1:], global, func(st *Store, n []string) error { return st.Enable(n...) })
 	case "off":
-		return applyKnown(s, args[1:], s.Disable)
+		return applyKnown(set, args[1:], global, func(st *Store, n []string) error { return st.Disable(n...) })
 	case "only":
-		if err := requireKnown(s, args[1:]); err != nil {
-			return err
-		}
-		if err := s.SetEnabled(args[1:]); err != nil {
-			return err
-		}
-		return cmdList(s)
+		return cmdOnly(set, args[1:], global)
 	case "clear":
-		if err := s.SetEnabled(nil); err != nil {
+		if err := set.Active(global).SetEnabled(nil); err != nil {
 			return err
 		}
-		return cmdList(s)
+		return cmdList(set)
 	case "pick":
-		return cmdPick(s)
+		return cmdPick(set)
 	case "show", "cat", "view":
-		return cmdShow(s, args[1:])
+		return cmdShow(set, args[1:], global)
 	case "new", "add", "create":
-		return cmdNew(s, args[1:])
+		return cmdAdd(set, args[1:], global)
 	case "edit":
-		return cmdEdit(s, args[1:])
+		return cmdEdit(set, args[1:], global)
 	case "rm", "remove", "delete":
-		return applyKnown(s, args[1:], s.RemoveAll)
+		return applyKnown(set, args[1:], global, func(st *Store, n []string) error { return st.RemoveAll(n...) })
+	case "scope":
+		return cmdScope(set, args[1:])
 	case "hook":
-		return cmdHook(s)
+		return cmdHook(set)
 	case "status":
-		return cmdStatus(s)
+		return cmdStatus(set)
 	case "menu":
-		return cmdMenu(s)
+		return cmdMenu(set)
 	}
 
-	// No subcommand matched, so treat every argument as a snippet to toggle.
-	// This is the common path: `snip brief`.
-	return cmdToggle(s, args)
+	// No subcommand matched, so every argument is a snippet to toggle. This is
+	// the common path: `snip brief`.
+	return applyKnown(set, args, global, func(st *Store, names []string) error {
+		for _, n := range names {
+			if _, err := st.Toggle(n); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
-func cmdList(s *Store) error {
-	names, err := s.Names()
+func cmdList(set *Set) error {
+	all, err := set.List()
 	if err != nil {
 		return err
 	}
-	if len(names) == 0 {
-		fmt.Printf("no snippets in %s — create one with: snip new <name> <text>\n", s.Dir)
+	if len(all) == 0 {
+		fmt.Printf("no snippets in %s — create one with: snip add <name> <text>\n", set.global.Dir)
 		return nil
 	}
-	for _, n := range names {
+	tagged := set.project != nil
+	for _, sn := range all {
 		mark := " "
-		if s.IsEnabled(n) {
+		if sn.Enabled() {
 			mark = "x"
 		}
-		fmt.Printf("  [%s] %-16s %s\n", mark, n, truncate(s.Summary(n), 52))
+		scope := ""
+		if tagged {
+			scope = fmt.Sprintf(" \033[2m(%s)\033[0m", sn.Scope)
+		}
+		fmt.Printf("  [%s] %-16s%s %s\n", mark, sn.Name, scope, truncate(sn.Summary(), 44))
+	}
+	if tagged {
+		fmt.Printf("\033[2m  project: %s\033[0m\n", set.Root)
 	}
 	return nil
 }
 
-func cmdToggle(s *Store, names []string) error {
-	if err := requireKnown(s, names); err != nil {
-		return err
-	}
+func cmdOnly(set *Set, names []string, global bool) error {
+	store := set.Active(global)
 	for _, n := range names {
-		if _, err := s.Toggle(n); err != nil {
-			return err
+		if !store.Exists(n) {
+			return fmt.Errorf("no snippet %q in the %s scope", n, set.ActiveScope(global))
 		}
 	}
-	return cmdList(s)
+	if err := store.SetEnabled(names); err != nil {
+		return err
+	}
+	return cmdList(set)
 }
 
-func cmdPick(s *Store) error {
-	names, err := s.Names()
+func cmdPick(set *Set) error {
+	all, err := set.List()
 	if err != nil {
 		return err
 	}
-	if len(names) == 0 {
-		return fmt.Errorf("no snippets in %s", s.Dir)
+	if len(all) == 0 {
+		return fmt.Errorf("no snippets in %s", set.global.Dir)
 	}
-	items := make([]item, 0, len(names))
-	for _, n := range names {
-		items = append(items, item{name: n, summary: s.Summary(n), on: s.IsEnabled(n)})
+	items := make([]item, 0, len(all))
+	for _, sn := range all {
+		label := sn.Name
+		if set.project != nil {
+			label = fmt.Sprintf("%s (%s)", sn.Name, sn.Scope)
+		}
+		items = append(items, item{name: label, summary: sn.Summary(), on: sn.Enabled()})
 	}
 	chosen, ok, err := Pick(items)
 	if err != nil {
@@ -144,17 +186,30 @@ func cmdPick(s *Store) error {
 		fmt.Println("cancelled")
 		return nil
 	}
-	if err := s.SetEnabled(chosen); err != nil {
-		return err
+	// Map the picked labels back to per-store selections.
+	picked := map[string]bool{}
+	for _, c := range chosen {
+		picked[c] = true
 	}
-	return cmdList(s)
+	perStore := map[*Store][]string{}
+	for i, sn := range all {
+		if picked[items[i].name] {
+			perStore[sn.Store] = append(perStore[sn.Store], sn.Name)
+		}
+	}
+	for _, store := range set.stores() {
+		if err := store.SetEnabled(perStore[store]); err != nil {
+			return err
+		}
+	}
+	return cmdList(set)
 }
 
 // cmdShow prints named snippets in full. With no names it falls back to the
 // composed text of everything enabled — what actually reaches a prompt.
-func cmdShow(s *Store, names []string) error {
+func cmdShow(set *Set, names []string, global bool) error {
 	if len(names) == 0 {
-		text, err := s.Compose()
+		text, err := set.Compose()
 		if err != nil {
 			return err
 		}
@@ -165,11 +220,12 @@ func cmdShow(s *Store, names []string) error {
 		fmt.Println(text)
 		return nil
 	}
-	if err := requireKnown(s, names); err != nil {
-		return err
-	}
 	for i, n := range names {
-		body, err := s.Body(n)
+		store, scope, err := set.Resolve(n, global)
+		if err != nil {
+			return err
+		}
+		body, err := store.Body(n)
 		if err != nil {
 			return err
 		}
@@ -177,22 +233,17 @@ func cmdShow(s *Store, names []string) error {
 			if i > 0 {
 				fmt.Println()
 			}
-			state := "off"
-			if s.IsEnabled(n) {
-				state = "on"
-			}
-			fmt.Printf("\033[1m%s\033[0m \033[2m(%s)\033[0m\n", n, state)
+			fmt.Printf("\033[1m%s\033[0m \033[2m(%s)\033[0m\n", n, scope)
 		}
 		fmt.Println(body)
 	}
 	return nil
 }
 
-func cmdNew(s *Store, args []string) error {
+func cmdAdd(set *Set, args []string, global bool) error {
+	store := set.Active(global)
 	var name, body string
-	switch {
-	case len(args) == 0:
-		// Fully interactive: ask for the name too.
+	if len(args) == 0 {
 		if !onTerminal() {
 			return fmt.Errorf("usage: snip add <name> [text...]")
 		}
@@ -203,15 +254,16 @@ func cmdNew(s *Store, args []string) error {
 		if name = strings.TrimSpace(name); name == "" {
 			return fmt.Errorf("no name given")
 		}
-	default:
+	} else {
 		name = args[0]
 		body = strings.Join(args[1:], " ")
 	}
-	if strings.ContainsAny(name, "/\\ ") {
+	if strings.ContainsAny(name, `/\ `) {
 		return fmt.Errorf("snippet names cannot contain spaces or slashes")
 	}
-	if s.Exists(name) {
-		return fmt.Errorf("snippet %q already exists — edit it with: snip edit %s", name, name)
+	if store.Exists(name) {
+		return fmt.Errorf("snippet %q already exists in the %s scope — edit it with: snip edit %s",
+			name, set.ActiveScope(global), name)
 	}
 	if body == "" {
 		if onTerminal() {
@@ -226,34 +278,62 @@ func cmdNew(s *Store, args []string) error {
 	if strings.TrimSpace(body) == "" {
 		return fmt.Errorf("refusing to create an empty snippet")
 	}
-	if err := s.Write(name, body); err != nil {
+	if err := store.Write(name, body); err != nil {
 		return err
 	}
-	fmt.Printf("created %s\n", s.path(name))
+	fmt.Printf("created %s\n", store.path(name))
 	return nil
 }
 
-func cmdEdit(s *Store, args []string) error {
+func cmdEdit(set *Set, args []string, global bool) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: snip edit <name>")
 	}
-	if !s.Exists(args[0]) {
-		return unknown(s, args[0])
+	store, _, err := set.Resolve(args[0], global)
+	if err != nil {
+		return err
 	}
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command(editor, s.path(args[0]))
+	cmd := exec.Command(editor, store.path(args[0]))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+func cmdScope(set *Set, args []string) error {
+	if len(args) > 0 && args[0] == "init" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		dir := filepath.Join(cwd, projectDirName)
+		if set.project != nil && set.Root == cwd {
+			return fmt.Errorf("%s already opted in (%s)", cwd, dir)
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		fmt.Printf("created %s\n", dir)
+		fmt.Println("project snippets now apply here; add one with: snip add <name> <text>")
+		return nil
+	}
+	fmt.Printf("global:  %s\n", set.global.Dir)
+	if set.project == nil {
+		fmt.Println("project: none — opt in with: snip scope init")
+		return nil
+	}
+	fmt.Printf("project: %s\n", set.project.Dir)
+	fmt.Printf("         rooted at %s\n", set.Root)
+	return nil
 }
 
 // cmdHook emits the JSON a UserPromptSubmit hook returns. suppressOutput keeps
 // the raw stdout out of the transcript; additionalContext is what reaches the
 // model. Exiting silently when nothing is enabled costs the prompt nothing.
-func cmdHook(s *Store) error {
-	text, err := s.Compose()
+func cmdHook(set *Set) error {
+	text, err := set.Compose()
 	if err != nil || strings.TrimSpace(text) == "" {
 		return nil
 	}
@@ -266,8 +346,8 @@ func cmdHook(s *Store) error {
 	})
 }
 
-func cmdStatus(s *Store) error {
-	on, err := s.Enabled()
+func cmdStatus(set *Set) error {
+	on, err := set.EnabledLabels()
 	if err != nil || len(on) == 0 {
 		fmt.Print("snip: none")
 		return nil
@@ -278,50 +358,50 @@ func cmdStatus(s *Store) error {
 
 // cmdMenu feeds the /snip slash command. It emits JSON rather than a delimited
 // line because a snippet summary may itself contain any separator character.
-func cmdMenu(s *Store) error {
-	names, err := s.Names()
+func cmdMenu(set *Set) error {
+	all, err := set.List()
 	if err != nil {
 		return err
 	}
 	type row struct {
 		Name    string `json:"name"`
+		Scope   string `json:"scope"`
 		Enabled bool   `json:"enabled"`
 		Summary string `json:"summary"`
 	}
-	rows := make([]row, 0, len(names))
-	for _, n := range names {
-		rows = append(rows, row{Name: n, Enabled: s.IsEnabled(n), Summary: s.Summary(n)})
+	rows := make([]row, 0, len(all))
+	for _, sn := range all {
+		rows = append(rows, row{Name: sn.Name, Scope: string(sn.Scope), Enabled: sn.Enabled(), Summary: sn.Summary()})
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(rows)
 }
 
-func applyKnown(s *Store, names []string, fn func(...string) error) error {
+// applyKnown resolves every name to its owning store before mutating anything,
+// so a typo in the third argument does not leave the first two applied.
+func applyKnown(set *Set, names []string, global bool, fn func(*Store, []string) error) error {
 	if len(names) == 0 {
 		return fmt.Errorf("expected at least one snippet name")
 	}
-	if err := requireKnown(s, names); err != nil {
-		return err
-	}
-	if err := fn(names...); err != nil {
-		return err
-	}
-	return cmdList(s)
-}
-
-func requireKnown(s *Store, names []string) error {
+	byStore := map[*Store][]string{}
+	var order []*Store
 	for _, n := range names {
-		if !s.Exists(n) {
-			return unknown(s, n)
+		store, _, err := set.Resolve(n, global)
+		if err != nil {
+			return err
+		}
+		if _, seen := byStore[store]; !seen {
+			order = append(order, store)
+		}
+		byStore[store] = append(byStore[store], n)
+	}
+	for _, store := range order {
+		if err := fn(store, byStore[store]); err != nil {
+			return err
 		}
 	}
-	return nil
-}
-
-func unknown(s *Store, name string) error {
-	known, _ := s.Names()
-	return fmt.Errorf("no snippet %q (have: %s)", name, strings.Join(known, ", "))
+	return cmdList(set)
 }
 
 // onTerminal reports whether stdin is an interactive terminal, so `snip add`
