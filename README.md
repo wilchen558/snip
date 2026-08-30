@@ -226,3 +226,7 @@ go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ```
 
 [AGENTS.md](AGENTS.md) has the architecture and the traps.
+
+## Licence
+
+[MIT](LICENSE).
