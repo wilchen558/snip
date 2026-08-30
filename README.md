@@ -2,20 +2,19 @@
 
 Reusable instruction snippets, appended to every Claude Code prompt.
 
-Write an instruction once — "answer in under five sentences", "never assume, ask
-first" — then switch it on and off without retyping it. A `UserPromptSubmit`
-hook appends whatever is enabled to each prompt you send.
+Write an instruction once, then switch it on and off instead of retyping it.
+A `UserPromptSubmit` hook appends whatever is enabled to each prompt you send.
 
 ```console
 $ snip
-  [ ] ask-questions    Never assume. If any part of this request is ambiguo…
-  [x] brief            Skip the preamble. Answer in under five sentences un…
-  [ ] no-new-deps      Do not add new dependencies. Solve it with what's al…
+  [ ] ask-questions    Never assume. If any part of this request i…
+  [x] brief            Skip the preamble. Answer in under five sen…
+  [ ] no-new-deps      Do not add new dependencies. Solve it with …
 
-$ snip ask-questions          # toggle it on
-  [x] ask-questions    Never assume. If any part of this request is ambiguo…
-  [x] brief            Skip the preamble. Answer in under five sentences un…
-  [ ] no-new-deps      Do not add new dependencies. Solve it with what's al…
+$ snip ask-questions
+  [x] ask-questions    Never assume. If any part of this request i…
+  [x] brief            Skip the preamble. Answer in under five sen…
+  [ ] no-new-deps      Do not add new dependencies. Solve it with …
 ```
 
 One binary. [kong](https://github.com/alecthomas/kong) is the only dependency.
@@ -27,13 +26,12 @@ git clone https://github.com/twilchen/snip && cd snip
 go build -ldflags "-X main.version=$(git describe --tags --always)" -o ~/.local/bin/snip .
 ```
 
-Make sure `~/.local/bin` is on your `PATH`.
+`~/.local/bin` must be on your `PATH`.
 
 ## Wire it into Claude Code
 
-Add to `~/.claude/settings.json`:
-
 ```json
+// ~/.claude/settings.json
 {
   "hooks": {
     "UserPromptSubmit": [
@@ -45,55 +43,59 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-Three separate things happen here:
+- `snip hook` prints the enabled snippets as `additionalContext` JSON, and
+  nothing at all when none are enabled.
+- `snip status` puts `snip: brief,no-new-deps` in the status line.
+- `respondToBashCommands: false` is what makes the next section free.
 
-- **`snip hook`** is the hook itself. It prints the enabled snippets as
-  `additionalContext` JSON, and prints nothing at all when none are enabled.
-- **`snip status`** renders `snip: brief,no-new-deps` in the status line, so you
-  can always see what is active without spending a turn asking.
-- **`respondToBashCommands: false`** makes `! snip brief`, typed in Claude Code's
-  input box, toggle without costing a model turn. It applies to every `!`
-  command, not just this one.
+Restart Claude Code for the status line; the hook works immediately.
 
-Restart Claude Code to pick up the status line; the hook takes effect
-immediately.
+## Toggling from inside Claude Code
 
-## Everyday use
+Type `!` in the input box to run a command. With `respondToBashCommands: false`
+there is no assistant turn, so toggling costs nothing:
+
+```console
+> ! snip brief
+  [ ] ask-questions    Never assume. If any part of this request i…
+  [x] brief            Skip the preamble. Answer in under five sen…
+  [ ] no-new-deps      Do not add new dependencies. Solve it with …
+```
+
+Your next prompt carries `brief`. The status line shows what is active, so you
+never have to ask.
+
+`snip pick` is the exception — it draws a full-screen widget and Claude Code's
+`!` box has no TTY. Use it in a terminal, or see [`/snip`](#a-snip-slash-command).
+
+## Commands
 
 ```sh
 snip                        # list; [x] means enabled
 snip brief                  # toggle one
 snip brief no-new-deps      # toggle several
-snip on brief               # enable, regardless of current state
+snip on brief               # enable regardless of current state
 snip off brief              # disable
 snip only brief             # make this the exact enabled set
 snip clear                  # disable everything
-```
 
-Inspect what is actually being sent:
+snip add hurry "Answer in under five sentences."
+snip add hurry              # prompts for the body, ctrl-d to finish
+echo "Cite file:line." | snip add cite
+snip edit hurry             # opens $EDITOR
+snip rm hurry
+```
 
 ```console
 $ snip show brief
 Skip the preamble. Answer in under five sentences unless I ask for depth.
 
-$ snip show                 # every enabled snippet, joined as the prompt sees it
+$ snip show                 # everything enabled, as the prompt receives it
 Skip the preamble. Answer in under five sentences unless I ask for depth.
 
 Do not add new dependencies. Solve it with what's already in the project, or
 tell me which dependency you'd need and why before adding it.
 ```
-
-Manage the collection:
-
-```sh
-snip add hurry "Answer in under five sentences."   # inline body
-snip add hurry                                     # prompts, ctrl-d to finish
-echo "Cite file:line for every claim." | snip add cite
-snip edit hurry                                    # opens $EDITOR
-snip rm hurry
-```
-
-Pick interactively — arrow keys, space to toggle, enter to save:
 
 ```console
 $ snip pick
@@ -103,9 +105,6 @@ $ snip pick
   [x] test-first       Write the failing test before the implementation…
 ```
 
-`snip pick` draws a full-screen widget and needs a real terminal. It will not
-work from Claude Code's `!` input box, which provides no TTY.
-
 ## Per-project snippets
 
 A repository can carry its own snippets alongside your global ones. Both apply.
@@ -114,70 +113,53 @@ A repository can carry its own snippets alongside your global ones. Both apply.
 $ cd ~/projects/backend
 $ snip scope init
 created /home/you/projects/backend/.claude/snippets
-project snippets now apply here; add one with: snip add <name> <text>
 
 $ snip add ticket "Reference the Jira ticket ID in every commit message."
 created /home/you/projects/backend/.claude/snippets/ticket.md
 
-$ snip ticket                 # enable it, for this repo only
+$ snip ticket
   [x] brief        (global)   Skip the preamble. Answer in under five sen…
   [ ] no-new-deps  (global)   Do not add new dependencies. Solve it with …
   [x] ticket       (project)  Reference the Jira ticket ID in every commi…
   project: /home/you/projects/backend
-```
 
-A prompt sent from that repo now carries `brief` **and** `ticket`. Elsewhere it
-carries only `brief` — the two `.enabled` files are independent, and toggling
-inside a project never writes to your global one.
-
-The lookup walks up from the working directory, so it applies in every
-subdirectory of the repo:
-
-```console
-$ cd ~/projects/backend/internal/api && snip status
+$ cd internal/api && snip status      # applies repo-wide
 snip: brief,ticket
 ```
 
-### When both scopes use the same name
+Prompts from that repo carry `brief` **and** `ticket`; elsewhere, only `brief`.
+The two `.enabled` files are independent — toggling in a project never writes to
+your global one.
 
-They stay separate snippets, both listed and both enablable. A bare name means
-the project one; `-g` reaches the global one.
+### Same name in both scopes
+
+Two separate snippets. A bare name means the project one, `-g` the global one,
+and both can be enabled at once.
 
 ```console
-$ snip                        # inside the project
+$ snip
   [x] brief   (global)    Skip the preamble. Answer in under five sentences…
-  [ ] brief   (project)   Keep answers to one paragraph; this repo's reviews…
-
-$ snip show brief             # the project's
-Keep answers to one paragraph; this repo's reviews are async.
-
-$ snip -g show brief          # the global one
-Skip the preamble. Answer in under five sentences unless I ask for depth.
-
-$ snip brief                  # toggles the project one
-$ snip -g brief               # toggles the global one
+  [ ] brief   (project)   Keep answers to one paragraph; reviews are async…
 ```
 
-The status line disambiguates only when it has to: `snip: brief(g),brief(p)`.
-
-Check which scopes are in play at any time:
-
-```console
-$ snip scope
-global:  /home/you/.claude/snippets
-project: /home/you/projects/backend/.claude/snippets
-         rooted at /home/you/projects/backend
+```sh
+snip show brief          # the project one
+snip -g show brief       # the global one
+snip brief               # toggles the project one
+snip -g brief            # toggles the global one
 ```
+
+The status line disambiguates only when it must: `snip: brief(g),brief(p)`.
 
 ## A `/snip` slash command
 
-Drop this in `~/.claude/commands/snip.md` for an arrow-key picker inside Claude
-Code, where `snip pick` cannot run:
+For an arrow-key picker inside Claude Code, where `snip pick` cannot run. Drop
+this in `~/.claude/commands/snip.md`:
 
-```markdown
+````markdown
 ---
 description: Toggle prompt snippets appended to every prompt
-argument-hint: [blank opens the picker | <name> to toggle | on/off/only/clear/show]
+argument-hint: [blank opens the picker | <name> to toggle | on/off/only/clear]
 allowed-tools: Bash(snip:*)
 ---
 
@@ -190,26 +172,26 @@ Arguments given: "$ARGUMENTS"
 If arguments are non-empty, run `snip $ARGUMENTS` and print the output verbatim.
 If empty, present the inventory as a multi-select, then run
 `snip only <selected>` (or `snip clear` if nothing was picked).
-```
+````
 
-## Where things live
+Unlike `! snip`, this costs a model turn.
 
-| | Path | Override |
-| --- | --- | --- |
-| Global snippets | `~/.claude/snippets/*.md` | `SNIP_DIR` |
-| Global enabled set | `~/.claude/snippets/.enabled` | |
-| Project snippets | `<root>/.claude/snippets/*.md` | |
-| Project enabled set | `<root>/.claude/snippets/.enabled` | |
+## Files
 
-A snippet is a plain Markdown file; its first line is the summary shown in
-listings. `.enabled` is one name per line — hand-editable, and `#` comments are
-ignored. A name in `.enabled` with no matching file is skipped rather than
-treated as an error, so deleting a snippet never breaks the hook.
+| | Path |
+| --- | --- |
+| Global snippets | `~/.claude/snippets/*.md` (override with `SNIP_DIR`) |
+| Project snippets | `<root>/.claude/snippets/*.md` |
+| Enabled set | `.enabled` in either directory |
 
-`$HOME` is never a project root, even though `~/.claude/snippets` has exactly
-the shape of the project marker.
+A snippet is a Markdown file whose first line is the summary shown in listings.
+`.enabled` is one name per line, hand-editable, `#` comments ignored. A name
+with no matching file is skipped, so deleting a snippet never breaks the hook.
 
-## Command reference
+`$HOME` is never a project root, though `~/.claude/snippets` has exactly the
+shape of the project marker.
+
+## Reference
 
 | Command | Effect |
 | --- | --- |
@@ -228,19 +210,18 @@ the shape of the project marker.
 | `snip status` | One-line summary for the status line |
 | `snip menu` | JSON inventory |
 
-`-g` / `--global` makes any command act on the global scope from inside a
-project. Aliases: `ls`, `cat`, `view`, `new`, `create`, `remove`, `delete`.
+`-g` acts on the global scope from inside a project.
+Aliases: `ls`, `cat`, `view`, `new`, `create`, `remove`, `delete`.
 
-A snippet named after a subcommand — `on`, `show`, `list` — cannot be toggled
-by bare name, since the argument parser claims it first. Use the explicit form:
-`snip toggle on`.
+A snippet named after a subcommand — `on`, `show`, `list` — can't be toggled by
+bare name; the parser claims it first. Use `snip toggle on`.
 
 ## Development
 
 ```sh
-go test ./...                                              # 24 tests
+go test ./...        # 24 tests
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ```
 
-See [AGENTS.md](AGENTS.md) for architecture and conventions.
+[AGENTS.md](AGENTS.md) has the architecture and the traps.
