@@ -160,7 +160,9 @@ func (c *addCmd) Run(ctx *Context) error {
 		if onTerminal() {
 			fmt.Fprintln(os.Stderr, "snippet text (finish with ctrl-d):")
 		}
-		b, err := io.ReadAll(os.Stdin)
+		// Read one byte past the limit so an oversized body is refused rather
+		// than silently truncated, and buffer no more than that either way.
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, maxSnippetBytes+1))
 		if err != nil {
 			return err
 		}
@@ -209,8 +211,10 @@ func (c *rmCmd) Run(ctx *Context) error {
 // stale "project: none", since the Set was resolved before init created the
 // directory. The report is a default subcommand instead.
 type scopeCmd struct {
-	Show scopeShowCmd `cmd:"" default:"1" help:"Report which scopes are active."`
-	Init scopeInitCmd `cmd:"" help:"Opt this directory in to project snippets."`
+	Show    scopeShowCmd    `cmd:"" default:"1" help:"Report which scopes are active."`
+	Init    scopeInitCmd    `cmd:"" help:"Opt this directory in to project snippets."`
+	Adopt   scopeAdoptCmd   `cmd:"" help:"Enable snippets this repository suggests. With no names, all of them."`
+	Dismiss scopeDismissCmd `cmd:"" help:"Stop offering suggested snippets. With no names, all of them."`
 }
 
 type scopeShowCmd struct{}
@@ -223,7 +227,79 @@ func (*scopeShowCmd) Run(ctx *Context) error {
 	}
 	fmt.Printf("project: %s\n", ctx.Set.project.Dir())
 	fmt.Printf("         rooted at %s\n", ctx.Set.root)
+	// The enabled list is deliberately not in the repository, so say where it
+	// is: someone looking for their toggles would otherwise search the checkout.
+	fmt.Printf("         enabled set %s\n", ctx.Set.project.manifestPath())
+	suggested, err := ctx.Set.Suggested()
+	if err != nil {
+		return err
+	}
+	if len(suggested) > 0 {
+		fmt.Printf("         suggests %s (not applied; adopt with: snip scope adopt)\n",
+			strings.Join(suggested, ", "))
+	}
 	return nil
+}
+
+// scopeAdoptCmd and scopeDismissCmd are the user action that a repository's own
+// .enabled deliberately is not. The repository proposes a set of snippets; one
+// of these two decides on it, and until one runs, a clone changes nothing.
+type scopeAdoptCmd struct {
+	Names []string `arg:"" optional:"" help:"Suggestions to take. With none, all of them."`
+}
+
+func (c *scopeAdoptCmd) Run(ctx *Context) error { return decideSuggestions(ctx, c.Names, true) }
+
+type scopeDismissCmd struct {
+	Names []string `arg:"" optional:"" help:"Suggestions to decline. With none, all of them."`
+}
+
+func (c *scopeDismissCmd) Run(ctx *Context) error { return decideSuggestions(ctx, c.Names, false) }
+
+func decideSuggestions(ctx *Context, names []string, adopt bool) error {
+	if ctx.Set.project == nil {
+		return fmt.Errorf("no project scope here; opt in with: snip scope init")
+	}
+	suggested, err := ctx.Set.Suggested()
+	if err != nil {
+		return err
+	}
+	if len(suggested) == 0 {
+		fmt.Println("this project suggests nothing you have not already decided on")
+		return renderList(ctx.Set)
+	}
+	// Naming a subset is the point: all-or-nothing would push a user who wants
+	// one of five suggestions into taking all five.
+	if len(names) > 0 {
+		offered := make(map[string]bool, len(suggested))
+		for _, name := range suggested {
+			offered[name] = true
+		}
+		for _, name := range names {
+			if !offered[name] {
+				return fmt.Errorf("%q is not an open suggestion here (have: %s)",
+					name, strings.Join(suggested, ", "))
+			}
+		}
+		suggested = dedupe(names)
+	}
+	verb, apply := "dismissed", ctx.Set.project.Dismiss
+	if adopt {
+		verb, apply = "adopted", ctx.Set.project.Adopt
+	}
+	if err := apply(suggested); err != nil {
+		return err
+	}
+	fmt.Printf("%s %d suggested snippet%s: %s\n",
+		verb, len(suggested), plural(len(suggested)), strings.Join(suggested, ", "))
+	return renderList(ctx.Set)
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 type scopeInitCmd struct{}
@@ -316,9 +392,15 @@ type statusCmd struct{}
 
 func (*statusCmd) Run(ctx *Context) error {
 	labels, err := ctx.Set.EnabledLabels()
-	if err != nil || len(labels) == 0 {
-		fmt.Print("snip: none")
+	if err != nil {
+		// "snip: none" is a claim about the enabled set. Printing it after a
+		// failed read told the status line that nothing was on when the truth
+		// was unknown, which is the one answer a user cannot spot as wrong.
 		return err
+	}
+	if len(labels) == 0 {
+		fmt.Print("snip: none")
+		return nil
 	}
 	fmt.Printf("snip: %s", strings.Join(labels, ","))
 	return nil
@@ -333,6 +415,10 @@ type menuRow struct {
 	Scope   Scope  `json:"scope"`
 	Enabled bool   `json:"enabled"`
 	Summary string `json:"summary"`
+	// Suggested marks a snippet the repository proposes and the user has not
+	// decided on. It is never enabled on its own; the field exists so a
+	// consumer can offer the choice rather than make it.
+	Suggested bool `json:"suggested"`
 }
 
 func (*menuCmd) Run(ctx *Context) error {
@@ -340,13 +426,22 @@ func (*menuCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	suggested, err := ctx.Set.Suggested()
+	if err != nil {
+		return err
+	}
+	proposes := make(map[string]bool, len(suggested))
+	for _, name := range suggested {
+		proposes[name] = true
+	}
 	rows := make([]menuRow, 0, len(all))
 	for _, sn := range all {
 		rows = append(rows, menuRow{
-			Name:    sn.Name,
-			Scope:   sn.Scope,
-			Enabled: sn.Enabled(),
-			Summary: sn.Summary(),
+			Name:      sn.Name,
+			Scope:     sn.Scope,
+			Enabled:   sn.Enabled(),
+			Summary:   sn.Summary(),
+			Suggested: sn.Scope == Project && proposes[sn.Name],
 		})
 	}
 	enc := json.NewEncoder(os.Stdout)

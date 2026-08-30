@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ANSI escapes used across the CLI and the picker.
 const (
@@ -33,8 +36,20 @@ func renderList(set *Set) error {
 		}
 		fmt.Printf("  [%c] %-16s%s %s\n", mark, sn.Name, scope, truncate(sn.Summary(), 44))
 	}
-	if tagged {
-		fmt.Printf("%s  project: %s%s\n", dim, set.root, reset)
+	if !tagged {
+		return nil
+	}
+	fmt.Printf("%s  project: %s%s\n", dim, set.root, reset)
+	// A repository proposes; it never applies. Surfacing the proposal here is
+	// what makes that safe rather than merely silent — the snippets are visible
+	// in the list above, and this is the line that says how to turn them on.
+	suggested, err := set.Suggested()
+	if err != nil {
+		return err
+	}
+	if len(suggested) > 0 {
+		fmt.Printf("%s  project suggests: %s%s\n", dim, strings.Join(suggested, ", "), reset)
+		fmt.Printf("%s  adopt with: snip scope adopt%s\n", dim, reset)
 	}
 	return nil
 }

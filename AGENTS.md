@@ -23,7 +23,7 @@ Changing the shape of the first three breaks a live integration in the user's
 
 ```sh
 go build -o /tmp/snip .                                    # build
-go test ./...                                              # 30 tests, ~30ms
+go test ./...                                              # 52 tests, ~180ms
 go test -run TestConcurrent -count=5 ./...                 # the flaky-prone one
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...     # must stay clean
@@ -62,10 +62,21 @@ Two **scopes**, both of which apply to a prompt:
 - **project** — `<root>/.claude/snippets/`, created by `snip scope init`,
   discovered by walking up from the working directory
 
-`Store` is one scope's directory. `Set` is global plus an optional project
-store, and is what commands operate on. `Set.Active(global bool)` picks the
-store a mutation targets: project when one exists, global otherwise, and always
-global when `-g` was passed.
+`Store` is one scope's snippet directory plus the paths of the three lists it
+deals with, which are not all in that directory:
+
+| Field | Global | Project |
+| --- | --- | --- |
+| `dir` | `~/.claude/snippets` | `<root>/.claude/snippets` |
+| `manifest` — the user's enabled set | `dir/.enabled` | `<global>/projects/<slug>-<digest>.enabled` |
+| `seen` — suggestions already decided on | unused | the matching `.seen` |
+| `suggest` — read, never applied | unused | `dir/.enabled` |
+
+A project's enabled set is deliberately **not** in the repository. See trap 9.
+
+`Set` is global plus an optional project store, and is what commands operate on.
+`Set.Active(global bool)` picks the store a mutation targets: project when one
+exists, global otherwise, and always global when `-g` was passed.
 
 Name resolution (`Set.Resolve`) prefers the project scope, which is why `-g`
 exists. Two scopes may define the same name; they are separate snippets and can
@@ -135,7 +146,62 @@ please do not reintroduce the causes.
    be turned on. Guarded by `TestManifestUnsafeNamesAreRejected` and
    `TestEveryListedSnippetCanBeEnabled`.
 
-9. **A snippet named after a subcommand** (`on`, `show`, `list`) cannot be
+9. **The project scope is untrusted input.** `.claude/snippets` is the opt-in
+   marker, and a repository that ships one is discovered on the first `cd` into
+   the checkout — no user action in between. Everything in it is whatever the
+   clone contained, and the bodies go verbatim into `additionalContext` on
+   every prompt. Two halves, both load-bearing:
+
+   *Bodies.* `newProjectStoreAt` sets `Store.untrusted`, and `statSnippet`
+   refuses a symbolic link there: git can commit
+   `.claude/snippets/notes.md -> ~/.ssh/id_ed25519`, which turned the scope into
+   a read primitive aimed at the prompt. The global store is exempt because it
+   is the user's own directory. Every read path — `Names`, `Exists`, `Body`,
+   `Summary` — goes through `statSnippet` so the policy has one home; `Names`
+   filters by it too, or it would list a row nothing can enable.
+
+   *The enabled set.* It lives in the user's own store, keyed by the canonical
+   project root, never in the checkout. The repository's `.enabled` is read
+   through `Store.suggest` as a proposal and reported by `Set.Suggested`; only
+   `snip scope adopt` applies it. Deriving "suggested" from "not currently
+   enabled" is the tempting shortcut and it is wrong — switching an adopted
+   snippet off would re-offer it immediately, so the only way to silence a
+   proposal would be to accept it. Hence the separate `seen` list, written by
+   `Acknowledge`. Both halves of `projectStatePath` must come from
+   `canonical(root)`: deriving the slug from the raw path gave a symlinked
+   checkout its own state file next to an identical digest.
+
+   Guarded by `TestProjectStoreRejectsSymlinkedSnippets`,
+   `TestProjectScopeCannotLinkOutOfTheRepository`, `TestCloningAppliesNothing`,
+   `TestProjectStateLivesOutsideTheRepository`,
+   `TestTurningAnAdoptedSnippetOffDoesNotReOffer`,
+   `TestANewSuggestionIsOfferedAgain` and `TestProjectStateIsPerRoot`.
+
+10. **A failed lock reclaim must not loop.** `lock` used to `continue` straight
+    after `os.Remove` of a stale lock, skipping both the deadline check and the
+    sleep. A lock it could not remove — read-only directory, another user's
+    file under a sticky bit — span the CPU at 100% forever instead of failing
+    after `lockTimeout`. Guarded by `TestUnremovableStaleLockTimesOut`;
+    `lockTimeout` is a var so the test need not spend it.
+
+11. **`Summary` reads a prefix, not the body.** Listings call it once per row,
+    so reading each file in full made `snip` and `snip menu` cost the size of
+    the whole corpus. On a 172 KB snippet the bounded read is ~23x faster and
+    allocates ~41x less. Guarded by `TestSummaryReadsOnlyAPrefix` and measured
+    by `BenchmarkSummary`.
+
+12. **Machine-readable output must not assert what it failed to read.**
+    `snip status` printed `snip: none` and then returned the error, so a failed
+    read reached the status line as a confident "nothing is enabled". Guarded
+    by `TestStatusDoesNotClaimNoneOnFailure`.
+
+13. **A snippet body is capped** at `maxSnippetBytes`. Every enabled snippet is
+    read and concatenated on every prompt inside the hook's 5s timeout, so
+    `snip add notes < server.log` has to fail loudly rather than quietly grow
+    each prompt. `Store.Write` enforces it and `add` reads stdin through an
+    `io.LimitReader` so nothing larger is buffered either.
+
+14. **A snippet named after a subcommand** (`on`, `show`, `list`) cannot be
    toggled by bare name — kong claims the token. `snip toggle on` is the
    documented escape hatch. Adding a subcommand shadows that name, so weigh new
    subcommands against likely snippet names.
