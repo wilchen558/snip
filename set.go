@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,29 +58,41 @@ func NewSet() (*Set, error) {
 	return set, nil
 }
 
-// findProjectDir walks up from the working directory looking for the opt-in
-// marker, stopping at the filesystem root.
+// projectRootRefusal explains why a directory can never hold project snippets,
+// and returns nil when it can. Two are refused: the configured global store,
+// and $HOME itself. The global store lives at ~/.claude/snippets, which is
+// exactly the marker's shape, so without these guards every directory under
+// $HOME resolves to a project rooted at $HOME and writes meant for a project
+// land in the global store instead.
 //
-// Two directories are never project roots: the configured global store, and
-// $HOME itself. The global store lives at ~/.claude/snippets, which is exactly
-// the marker's shape, so without these guards every directory under $HOME
-// resolves to a project rooted at $HOME and writes meant for a project land in
-// the global store instead.
+// findProjectDir skips exactly what this refuses and "snip scope init" declines
+// it, which is the point of having one predicate: init once created the marker
+// wherever it was asked to, so in $HOME it reported success while every later
+// command still resolved to the global scope.
+func projectRootRefusal(dir, globalDir string) error {
+	marker := filepath.Join(dir, projectDirName)
+	if canonical(marker) == canonical(globalDir) {
+		return fmt.Errorf("%s is the global snippet store, not a project; run snip scope init inside a repository instead", marker)
+	}
+	// $HOME/.claude is Claude Code's own configuration, never a project.
+	if home, err := os.UserHomeDir(); err == nil && canonical(dir) == canonical(home) {
+		return errors.New("$HOME is never a project root, since ~/.claude is Claude Code's own configuration; run snip scope init inside a repository instead")
+	}
+	return nil
+}
+
+// findProjectDir walks up from the working directory looking for the opt-in
+// marker, stopping at the filesystem root. A marker in a directory
+// projectRootRefusal rejects is not one.
 func findProjectDir(globalDir string) (root, dir string, ok bool) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", "", false
 	}
-	global := canonical(globalDir)
-	home := ""
-	if h, err := os.UserHomeDir(); err == nil {
-		home = canonical(h)
-	}
 	for {
 		candidate := filepath.Join(cwd, projectDirName)
-		// $HOME/.claude is Claude Code's own configuration, never a project.
-		skip := canonical(candidate) == global || (home != "" && canonical(cwd) == home)
-		if st, err := os.Stat(candidate); err == nil && st.IsDir() && !skip {
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() &&
+			projectRootRefusal(cwd, globalDir) == nil {
 			return cwd, candidate, true
 		}
 		parent := filepath.Dir(cwd)

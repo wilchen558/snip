@@ -23,7 +23,7 @@ Changing the shape of the first three breaks a live integration in the user's
 
 ```sh
 go build -o /tmp/snip .                                    # build
-go test ./...                                              # 28 tests, ~30ms
+go test ./...                                              # 30 tests, ~30ms
 go test -run TestConcurrent -count=5 ./...                 # the flaky-prone one
 go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@latest ./...     # must stay clean
@@ -82,10 +82,17 @@ please do not reintroduce the causes.
 
 1. **`$HOME` is not a project root.** The global store lives at
    `~/.claude/snippets`, which is byte-for-byte the shape of the project marker.
-   Without the guard in `findProjectDir`, every directory under `$HOME` resolves
-   to a project rooted at `$HOME`, and writes intended for a project land in the
-   user's global store. Both the configured global directory and `$HOME` are
-   excluded. Guarded by `TestFindProjectDirSkipsTheGlobalStore`.
+   Without the guard, every directory under `$HOME` resolves to a project rooted
+   at `$HOME`, and writes intended for a project land in the user's global
+   store. Both the configured global directory and `$HOME` are excluded.
+   `projectRootRefusal` is the single predicate: `findProjectDir` skips what it
+   refuses and `snip scope init` declines it. Keep them on that one predicate —
+   init used to create the marker wherever it was asked, so in `$HOME` it
+   printed "project snippets now apply here" and every later command still
+   resolved to the global scope. Guarded by
+   `TestFindProjectDirSkipsTheGlobalStore`,
+   `TestScopeInitRefusesWhereDiscoveryWillNotLook` and
+   `TestProjectRootRefusalAgreesWithDiscovery`.
 
 2. **Manifest writes must go through `Store.mutate`.** It takes an advisory lock
    (exclusive file creation, stale after 30s) and writes atomically via

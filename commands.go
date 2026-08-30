@@ -237,6 +237,12 @@ func (*scopeInitCmd) Run(ctx *Context) error {
 	if ctx.Set.project != nil && ctx.Set.root == cwd {
 		return fmt.Errorf("%s already opted in (%s)", cwd, dir)
 	}
+	// Refuse where discovery will never look. Creating the marker anyway
+	// printed "project snippets now apply here" and then left every command
+	// resolving to the global scope, so project snippets landed in ~/.claude.
+	if err := projectRootRefusal(cwd, ctx.Set.global.Dir()); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return err
 	}
