@@ -147,6 +147,11 @@ func (c *addCmd) Run(ctx *Context) error {
 	if strings.ContainsAny(name, `/\ `) {
 		return fmt.Errorf("snippet names cannot contain spaces or slashes")
 	}
+	// Check the rest of the rules before reading a body, so a name the store
+	// cannot hold is rejected up front rather than after the user types it out.
+	if err := validName(name); err != nil {
+		return err
+	}
 	if store.Exists(name) {
 		return fmt.Errorf("snippet %q already exists in the %s scope; edit it with: snip edit %s",
 			name, ctx.Scope(), name)
